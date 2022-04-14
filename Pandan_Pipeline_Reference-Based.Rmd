@@ -1,0 +1,529 @@
+---
+title: "Pipeline for Producing Pandan Plastomes and Phylogenetic Inferences"
+author: "J. M. A. Wojahn, M. W. Callmander, F. Forest, S. Buerki"
+date: "April 2022"
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: true
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Install dependancies
+
+```{r eval=FALSE}
+# Make sure you are running bash, if not the use below command to switch to bash
+# Install trimmomatic
+system("brew install trimmomatic")
+# ! Make sure to record location of trimmomatic .jar file !
+# Install GetOrganelle
+system("conda install -c conda-forge -c bioconda getorganelle")
+# Install MUMmer
+system("brew install MUMmer")
+# Install ABACAS
+system("brew install ABACAS")
+# Install MITObim
+system("brew install MITObim")
+```
+
+# Source pipeline controller functions
+
+```{r eval=FALSE}
+# Source functions so that they are available 
+# Assumes functions are in folder called Functions
+source("Functions/Do_Multi_Trimmomatic_Command.R")
+source("Functions/FastaInterleaveR.R")
+source("Functions/ReadsInfoGetteR.R")
+source("Functions/MakeMultiGetOrgScript.R")
+source("Functions/MakeMultiMITObimScript.R")
+source("Functions/ML_Bayes_Cophylo_MakeR.R")
+source("Functions/ML_Bayes_Combo_Tree_MakeR.R")
+source("Functions/Condensed_Tree_MakeR.R")
+```
+
+
+# Trim reads
+
+### Purpose
+
+To trim reads according to their phread scores (at least 33) to remove low-quality ad sort reads, as well as the Illumina barcodes. 
+
+### Methodology
+
+Here we use Trimmomatic (Bolger, 2014) as controlled by a controller function.
+
+### Input
+
+The input is a .fq.gz file.
+
+### Output
+
+The output is also a .fq.gz file.
+
+```{r eval=FALSE}
+# Make list of PandanIDs (padded)
+Taxa <- sprintf("%s%04d","Pandan",1:62)
+Do_Multi_Trimmomatic_Command(Taxa)
+
+# Now interleave them
+TN <- sprintf("%s%04d","Pandan",1:62)
+FastaInterleaveR(TN)
+```
+
+
+### Get info on trimmed reads
+```{r eval=FALSE}
+# Make list of PandanIDs (padded)
+TN <- sprintf("%s%04d","Pandan",1:62)
+# Give path to intermediate data
+IntermediateDirectoryPath <- "/Volumes/Wojahn_Pandan_Genomics/PandanGenomesPhylogeny/Intermediate_Data"
+EstPlastLength <- 159362 # Tan et al. (2019)
+Trimmed = T # Are they trimmed?
+TrimmedReadsInfo <- ReadsInfoGetteR(TN,IntermediateDirectoryPath,EstPlastLength,Trimmed)
+write.csv(TrimmedReadsInfo,"TrimmedReadsInfo.csv",row.names=F)
+```
+
+# Perform *de Novo* plastome assembly with GetOrganelle
+
+### Purpose
+
+To attempt *de novo* assembly of plastomes
+
+### Methodology
+
+Here we use GetOrganelle (Jin et al., 2020) to perform genome assembly. This unfortunately must take place by manually executing a script outside of R, since the libraries used in GetOrganelle are for some reason inaccessible to the shell through the system command. 
+
+### Input
+
+The input is a trimmed compressed phred+33 (.fq.gz) file.
+
+### Output
+
+Several graphs and logfiles, and a fasta file.
+
+
+```{r eval=FALSE}
+# IMPORTANT
+# Ensure that the maximum open files limit is set to a high number, e.g.
+# sudo launchctl limit maxfiles 64000 524288
+
+# Make list of PandanIDs (padded)
+TN <- sprintf("%s%04d","Pandan",c(1:61))
+Template <- "Seed/MH748568.fasta" # Tan et al., 2019
+NumRo <- 25 # Number of rounds
+kmersizes <- "21,45,65,85,105" # Kmer sizes
+ws <- "auto" # Word size
+numcores <- 1 # one core (I ran 8 simultaneously)
+reftype <- "embplant_pt" # Plant plastome
+MakeMultiGetOrgScript(numcores,TN,NumRo,kmersizes,Template,ws,reftype)
+```
+
+
+# Perform hybrid *de novo*  plastome assembly with MITObim
+
+### Methodology
+
+Here we use MITObim (Hahn et al. 2013) to attempt a hybrid *de novo*  plastome assembly. This unfortunately must take place by manually executing a script outside of R, since the libraries used in GetOrganelle are for some reason inaccessible to the shell through the system command.
+
+### Input
+
+The input is a trimmed paired phred+33 (.fq.gz) file (or many of them).
+
+### Output
+
+Several graphs and logfiles, and a fasta file. Be sure to choose the NonIUPAC fasta
+
+```{r eval=FALSE}
+# Set parameters
+# Make list of PandanIDs (padded)
+TN <- sprintf("%s%04d","Pandan",1:62)
+# Path to MITObim Perl script
+FullMITObimPath <- "/Users/Mike/MITObim/MITObim.pl"
+# Path to MIRA code
+FullMIRAPath <- "/Users/Mike/mira_4.0.2_darwin13.1.0_x86_64_static/bin"
+# Path to seed
+FullSeedPath <- rep("/Volumes/Wojahn_Pandan_Genomics/PandanGenomesPhylogeny/03_Seed/Tan2019.fasta",length(TN))
+# Create automatic analysis program(s)
+MakeMultiMITObimScript(FullMITObimPath, FullMIRAPath, FullSeedPath, TN, removeits = T, parallel = 4)
+
+# You may need to sudo chmod +x to be able to run the scripts, especieally if you are running them in parallel.
+
+# You can check progress of parallel scripts using jobs
+# Run autonomous MITObim controller function
+# ./MasterMITObimScript.sh
+```
+
+# View plastomes
+
+### Purpose:
+
+To ensure that plastomes are properly constructed, and to determine where the 2nd inverted repeat begins and ends so it can be removed.
+
+### Software:
+
+Bandage (Wick et al., 2015)
+
+# Write randomized input fasta for MAFFT Alignment
+
+### Purpose:
+
+To create a randomized multifasta of all assembled plastomes as an input for MAFFT on CIPRES. Randomization should help eliminate artifacts during alignment.
+
+### Input:
+
+PandanIDs
+
+### Output:
+
+A multifasta of all assembled plastomes in a random order.
+```{r eval=FALSE}
+# Read in key
+cle <- read.csv("Wojahnetal2022_Pandanus_Samples_Info.csv")
+# Make PandanIDs vactor (padded)
+TN_ordered <- sprintf("%s%04d","Pandan",1:63)
+# Remove fails
+TN_ordered <- TN_ordered[!TN_ordered == "Pandan0050"]
+TN_ordered <- TN_ordered[!TN_ordered == "Pandan0052"]
+# Randomly sample (well, pseudo-randomly)
+set.seed(12345)
+TN <- sample(TN_ordered,length(TN_ordered),replace=F)
+# RawGenomesMixed was manually created by copying good plastomes to a folder
+namez <- list.files("RawGenomes/RawGenomesMixed",full.names=T)
+# Make multifasta
+ChloroMultifasta <- c()
+for(i in 1:length(TN))
+{
+  print(sprintf("Processing %i of %i",i,length(TN)))
+  locale <- namez[grepl(TN[i],namez)]
+  espece <- unique(cle[cle$PandanID == TN[i],2]) # Get taxonomy
+  seqz <- readLines(locale) # Get sequence
+  seqz <- seqz[2:length(seqz)] # Remove old header
+  allz <- c(sprintf(">%s-%s-Chloroplast-Genome",TN[i],espece),seqz) # Add new header
+  ChloroMultifasta <- c(ChloroMultifasta,allz) # Combine
+}
+Tan19 <- readLines("ThisSeed.fasta")
+ChloroMultifasta <- c(Tan19,ChloroMultifasta)
+write.table(ChloroMultifasta,"ChloroMultifasta.fasta",row.names = F, col.names = F, quote = F)
+```
+
+# Align plastomes
+
+### Input:
+
+ChloroMultifasta.fasta
+
+### Output:
+
+Raw Alignment
+
+### Software:
+
+Alignment is done using MAFFT (Katoh et al., 2002) via CIPRES on XSEDE with the default parameters.
+
+# Manually curate the alignment and remove the second inverted repeat from the alignment
+
+### Purpose:
+
+Curating the alignment and removing one of the inverted repeats avoids biasing the maximum likelihood RAxML phylogenetic reconstruction.
+
+### Input:
+
+Alignment
+
+### Output:
+
+Curated alignment 
+
+### Software: 
+
+Curating is done manually in Unipro UGENE (Okonechnikov et al., 2012). 
+
+# Perform K2P clustering
+
+### Purpose:
+
+A K2P clustering analysis was performed to investigate plastomic circumscriptional power.
+
+### Input:
+
+Alignment.
+
+### Output:
+
+A histogram, with intra-generic Pandanus distances colored red and inter-generic Pandanus distances colored blue. Overlap is colored purple by combination of the above colors. 
+
+```{r eval=FALSE}
+# Read in the alignment as a DNAbin object
+GoodAlignment <- ape::read.FASTA("Wojahn_et_al_Pandanus_Plastome_Phylogeny_Project_Alignment.mafft")
+# Calculate K2P distances (aka K80)
+K2Pall <- ape::dist.dna(GoodAlignment, model = "K80",as.matrix = T)
+
+# K2P Pan-Others subset
+K2P_PanNonPan <- K2Pall[!grepl("Pandanus",rownames(K2Pall)),grepl("Pandanus",rownames(K2Pall))]
+PanNonPanDists <- c()
+for(i in 1:nrow(K2P_PanNonPan))
+{
+  PanNonPanDists <- c(PanNonPanDists,as.numeric(K2P_PanNonPan[i,]))
+}
+
+# K2P Pan-Pan subset
+K2P_PanPan <- K2Pall[grepl("Pandanus",rownames(K2Pall)),grepl("Pandanus",rownames(K2Pall))]
+PanPanDists <- c()
+pb <- txtProgressBar(min = 0,  
+                     max = nrow(K2P_PanPan), 
+                     style = 3,    
+                    width = 50,   
+                     char = "=")   
+for(i in 1:nrow(K2P_PanPan))
+{
+  setTxtProgressBar(pb, i)
+  if(i > 1)
+  {
+    smolPanPanDists <- c()
+    for(j in 1:i-1)
+    {
+      smolPanPanDists <- c(smolPanPanDists,K2P_PanPan[i,j])
+    }
+    PanPanDists <- c(PanPanDists,smolPanPanDists)
+  }
+}
+
+# Make histograms
+PanNonPanHist <- hist(c(PanNonPanDists), breaks =50, col = "blue")
+PanPanHist <- hist(c(PanPanDists), breaks =50, col = "red")
+
+# Write to file
+{
+  pdf("K2PHistsPlot.pdf",width=10, height=5)
+  par(mfrow = c(1, 2))
+  par(mar=c(5,5,5,0.1))
+  base::plot(PanNonPanHist, col=rgb(0,0,1,1/4), ylim=c(0,max(PanPanHist$counts)),xlim=c(0,0.02), border=NA,
+  xlab="Kimura 2-Parameter Distance",
+  main=NA)
+  base::plot(PanPanHist, add = T, col=rgb(1,0,0,1/4),border=NA)
+  par(mar=c(5,0.3,5,5))
+    plot.new()
+    legend("topleft", c("Pandanus", "Others"), col=c("red", "blue"), lwd=3)
+  dev.off()
+}
+```
+
+# Calculate Nei nucleotide diversity across plastomes
+
+### Purpose: 
+
+Nei nucleotide diversity was cvalculated for all plastomes to determine how much nucleotide diveristy they contain (the higher the nucleotidfe diversity the more resolution a phylogenetic inference has).
+
+### Input:
+
+Alignment
+
+### Output:
+
+Graph of Nei nucleotide diversity for Pandanus, Others
+
+```{r eval=FALSE}
+# NOTICE: This code is directly adapted from Simmonds et al., 2021
+
+# For just Pandanus...
+# Sliding window across cpDNA genome
+require(seqinr)
+require(zoo)
+require(ape)
+require(pegas)
+
+# Aligned cpDNA genomes
+Gen <- seqinr::read.fasta('Wojahn_et_al_Pandanus_Plastome_Phylogeny_Project_Alignment.mafft')
+genelength <- 1000
+Gen <- Gen[grepl("Pandanus",names(Gen))]
+# Establish moving window
+seq <- seq(from=1, to=length(Gen[[1]]), by=genelength)
+# 1000 is more or less gene length
+
+# Infer nucleotide diversity for all species in matrix
+INFO <- matrix(ncol=2, nrow=length(seq))
+rownames(INFO) <- seq
+colnames(INFO) <- c("Nuc_div", "N_Poly_char")
+pb = txtProgressBar(min = 0, max = length(seq), initial = 0) 
+for(i in 1:length(seq))
+{
+  setTxtProgressBar(pb,i)
+  # Matrix
+  val <- as.numeric(seq[i]):as.numeric(seq[i]+genelength-1)
+  
+  Short <- matrix(ncol=genelength, nrow=length(names(Gen)))
+  for(j in 1:length(names(Gen)))
+  {
+    Short[j,] <- Gen[[j]][val]
+  }  
+  # Infer nucleotide diversity and number of polymorphic char
+  INFO[i,1] <- nuc.div(as.DNAbin(Short))
+  INFO[i,2] <- length(seg.sites(as.DNAbin(Short)))
+}
+close(pb)
+
+INFO[,1] <- gsub('NaN', '0', INFO[,1])
+# Write results out
+write.csv(INFO, file="Pandanus_moving_window_nuc_div.csv", quote = F)
+INFOPandanus <- INFO
+
+# For all species...
+# Sliding window across cpDNA genome
+require(seqinr)
+require(zoo)
+require(ape)
+require(pegas)
+
+# Aligned cpDNA genomes
+Gen <- seqinr::read.fasta('Wojahn_et_al_Pandanus_Plastome_Phylogeny_Project_Alignment.mafft')
+genelength <- 1000
+# Establish moving window
+seq <- seq(from=1, to=length(Gen[[1]]), by=genelength)
+# 1000 is more or less gene length
+
+# Infer nucleotide diversity for all species in matrix
+INFO <- matrix(ncol=2, nrow=length(seq))
+rownames(INFO) <- seq
+colnames(INFO) <- c("Nuc_div", "N_Poly_char")
+pb = txtProgressBar(min = 0, max = length(seq), initial = 0) 
+for(i in 1:length(seq))
+{
+  setTxtProgressBar(pb,i)
+  # Matrix
+  val <- as.numeric(seq[i]):as.numeric(seq[i]+genelength-1)
+  
+  Short <- matrix(ncol=genelength, nrow=length(names(Gen)))
+  for(j in 1:length(names(Gen)))
+  {
+    Short[j,] <- Gen[[j]][val]
+  }  
+  # Infer nucleotide diversity and number of polymorphic char
+  INFO[i,1] <- nuc.div(as.DNAbin(Short))
+  INFO[i,2] <- length(seg.sites(as.DNAbin(Short)))
+}
+close(pb)
+
+INFO[,1] <- gsub('NaN', '0', INFO[,1])
+# Write results out
+write.csv(INFO, file="All_species_moving_window_nuc_div_5April2022.csv", quote = F)
+INFOall <- INFO
+
+# Write to file
+{
+  pdf('Sliding_window_NucDiv_1000bp_5April2022.pdf',width = 10, height = 5)
+  
+
+par(mfrow = c(1, 2))
+par(mar=c(5,5,5,0.1))
+    
+  plot(as.numeric(rownames(INFOPandanus))/1000, as.numeric(INFOPandanus[,1]), type='l', xlab='Alignment (Kbp)', ylab='Nucleotide diversity (1 Kbp sliding window)', ylim=c(0, 0.06),las = 2, xaxt = "n",col="red")
+  
+  axis(side = 1, at = seq(from=0, to=200, by = 10),las=2)
+lines(as.numeric(rownames(INFOall))/1000, INFOall[,1], type='l', col="black")
+  segments(x0=0, x1=as.numeric(175), y0=0.01, col='grey', lwd=1)
+   par(mar=c(5,0.3,5,5))
+  plot.new()
+  legend("topleft", c("All", "Pandanus", "Threshold"), col=c("black", "red", "grey"), lwd=3)
+  dev.off()
+}
+
+```
+
+# Build a Maximum Likelihood tree
+
+### Purpose:
+
+To reconstruct a bipartition tree using Maximum Likelihood Estimation.
+
+### Input: 
+
+An alignment.
+
+### Output:
+
+RAxML_bipartitions.result tree
+
+### Software:
+
+A RAxML maximum likelihood phylogeny was built using the curated alignment by RAxML-HPC version 8 (Stamatakis, 2006; Stamatakis, 2014) on XSEDE at CIPRES. Default parameters were used, except the maximum hours to run set to 10, the outgroup was set to our Sararanga philippinensis Merr. genome, the analysis type was changed to rapid bootstrap analysis/search for best-scoring ML tree (-f a), bootstrapping type was set to rapid bootstrapping (-x), and 1000 iterations was set as the explicit number of bootstraps to do. 
+
+# Build a Bayesian Inference tree
+
+### Purpose:
+
+To reconstruct a maximum credibility tree using Bayesian Inference Estimation.
+
+### Input: 
+
+An alignment.
+
+### Output:
+
+RAxML_bipartitions.result tree
+
+### Software:
+
+The corrected alignment was uploaded to CIPRES and the best-fit model (according to AICc, Akaike et al., 1973) was identified using ModelTest-NG (Darriba et al., 2020) on XSEDE (it identified GTR+I+Γ as the best-fit model; Tavaré, 1986). The corrected alignment was changed from MAFFT format to NEXUS format (Klosowski et al., 1997) in R using ape (Paradis et al., 2004). A MrBayes Bayesian inference phylogenetic maximum credibility tree was reconstructed using MrBayes on XSEDE at CIPRES (Ronquist et al., 2009). Default parameters were used, except model parameters were adjusted for the best-fit model as per Faircloth, 2010. In addition, as per Simmonds et al., 2021, the number of generations was adjusted to 20,000,000 generations (2 x 10,000,000), 2 runs and 4 chains sampling every 1,000 generations with a temperature of 0.2, and a burn-in of 2,500,000 generations. To determine whether the Markov chain had finished, we visually checked the overlay plot for any discernible trends to estimate if the chains had reached stationarity.
+
+# Interpret the phylogenies
+
+The RAxML_bipartitions.result (maximum likelihood tree) and infile.nex.con.tre (Bayesian influence tree) were downloaded from CIPRES and merged (after manual comparison confirmed they were identical) and used to construct two trees: one colored based on the traditional subgenus of each taxon, and the other colored based on the geographical location of the sample(s) representing each taxon. These two trees were used to integrate geographical patterns with evolutionary information. We use treeio, ape, and phytools in our function.
+
+```{r eval=FALSE}
+# Construct Bayesian-ML coplot
+# Path to maximum likelihood tree
+ML_path <- "April_2022_Trees/AprilRAxMLTree.result"
+# Path to general sampling key
+Key_path <- "23_Keys/Samplesinfo.csv"
+# Path to Bayesian inference tree
+Bayes_path <- "April_2022_Trees/AprilBayesTree.tre"
+# Create plot
+ML_Bayes_Cophylo_MakeR(ML_path,Bayes_path,Key_path)
+
+
+# Construct Bayesian-ML tree
+# Path to maximum likelihood tree
+ML_path <- "April_2022_Trees/AprilRAxMLTree.result"
+# Path to general sampling key
+Key_path <- "23_Keys/Samplesinfo2022.csv"
+# Path to Bayesian inference tree
+Bayes_path <- "April_2022_Trees/AprilBayesTree.tre"
+# Country codes
+ISO_path <- "ISO_Country_Codes.csv"
+Subgen_path <- "23_Keys/Subgen_codes.csv"
+ML_Bayes_Combo_Tree_MakeR(ML_path, Bayes_path, ISO_path, Key_path, Subgen_path)
+# ML_Bayes_Combo_Tree_MakeR uses ape, treeio, phytools, and castor internally.
+
+# Construct condensed Pandanus tree
+# Path to maximum likelihood tree
+ML_path <- "April_2022_Trees/AprilRAxMLTree.result"
+# Path to general sampling key
+Key_path <- "23_Keys/Samplesinfo2022.csv"
+# Path to Bayesian inference tree
+Bayes_path <- "April_2022_Trees/AprilBayesTree.tre"
+# Country codes
+ISO_path <- "ISO_Country_Codes.csv"
+Subgen_path <- "23_Keys/Subgen_codes.csv"
+Condensed_Tree_MakeR(ML_path, Bayes_path, ISO_path, Key_path, Subgen_path)
+# Condensed_Tree_MakeR uses ape, treeio, phytools, and castor internally.
+
+# GeneraTree.pdf and ComboTreeNew.pdf were then combined in Microsoft Powerpoint, with polygons and some labels added therein.
+```
+
+# Operating system information
+
+Version information about R, the operating system (OS) and attached or R loaded packages. This appendix was generated using the R `sessionInfo()` function.
+
+```{r environment, echo=FALSE}
+#Print details on operating system and package versions.
+sessionInfo()
+```
+
+
+
